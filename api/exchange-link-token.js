@@ -1,7 +1,7 @@
 const crypto = require("crypto");
 
 function b64urlDecode(str) {
-  str = str.replace(/-/g,"+").replace(/_/g,"/");
+  str = str.replace(/-/g, "+").replace(/_/g, "/");
   const pad = 4 - (str.length % 4 || 4);
   return Buffer.from(str + "=".repeat(pad), "base64").toString();
 }
@@ -18,13 +18,15 @@ module.exports = (req, res) => {
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "POST") return res.status(405).json({ ok:false, error:"method_not_allowed" });
 
-  const { token } = req.body || {};
-  if (!token) return res.status(400).json({ ok:false, error:"no_token" });
+  // 🔧 нормализуем токен: убираем кавычки/пробелы, декодируем
+  let raw = (req.body?.token ?? "").toString().trim();
+  raw = raw.replace(/^"+|"+$/g, "");               // срезать обрамляющие кавычки
+  raw = decodeURIComponent(raw);                   // на всякий
 
-  const [payloadB64, sig] = String(token).split(".");
+  const [payloadB64, sig] = raw.split(".");
   if (!payloadB64 || !sig) return res.status(401).json({ ok:false, error:"invalid_token_format" });
 
-  const expected = sign(payloadB64, process.env.JWT_SECRET);
+  const expected = sign(payloadB64, process.env.JWT_SECRET || "");
   if (expected !== sig) return res.status(401).json({ ok:false, error:"invalid_signature" });
 
   let payload;
