@@ -1,36 +1,61 @@
+// api/exchange-link-token.js
 const crypto = require("crypto");
 
-function b64url(buf) {
-  return Buffer.from(buf).toString("base64").replace(/=/g,"").replace(/\+/g,"-").replace(/\//g,"_");
-}
-function sign(data, secret) {
-  return b64url(crypto.createHmac("sha256", secret).update(data).digest());
+// --- утилиты ---
+function b64urlDecode(str) {
+  str = str.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = 4 - (str.length % 4 || 4);
+  return Buffer.from(str + "=".repeat(pad), "base64").toString();
 }
 
+function sign(data, secret) {
+  return crypto
+    .createHmac("sha256", secret)
+    .update(data)
+    .digest("base64")
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+}
+
+// --- обработчик ---
 module.exports = (req, res) => {
   const ORIGIN = process.env.CORS_ORIGIN || "*";
   res.setHeader("Access-Control-Allow-Origin", ORIGIN);
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-WebHook-Secret");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(204).end();
-  if (req.method !== "POST") return res.status(405).json({ ok:false, error:"method_not_allowed" });
+  if (req.method !== "POST")
+    return res.status(405).json({ ok: false, error: "method_not_allowed" });
 
-  // проверяем секрет от Salebot
-  const got = req.headers["x-webhook-secret"];
-  if (!got || got !== process.env.WEBHOOK_SECRET) {
-    return res.status(401).json({ ok:false, error:"bad_secret" });
+  // --- получаем и нормализуем токен ---
+  let raw = (req.body?.token ?? "").toString().trim();
+  raw = raw.replace(/^"+|"+$/g, ""); // срезаем кавычки, если есть
+  raw = decodeURIComponent(raw); // и на всякий случай раскодируем
+
+  const [payloadB64, sig] = raw.split(".");
+  if (!payloadB64 || !sig)
+    return res.status(401).json({ ok: false, error: "invalid_token_format" });
+
+  // --- проверяем подпись ---
+  const expected = sign(payloadB64, process.env.JWT_SECRET || "");
+  if (expected !== sig)
+    return res.status(401).json({ ok: false, error: "invalid_signature" });
+
+  // --- декодируем payload ---
+  let payload;
+  try {
+    payload = JSON.parse(b64urlDecode(payloadB64));
+  } catch {
+    return res.status(401).json({ ok: false, error: "bad_payload" });
   }
 
-  const { platform_id, sb_user_id } = req.body || {};
-  if (!platform_id) return res.status(400).json({ ok:false, error:"no_platform_id" });
+  // --- валидация ---
+  if (!payload.tg_id)
+    return res.status(401).json({ ok: false, error: "no_tg_id" });
+  if (Date.now() > Number(payload.exp))
+    return res.status(401).json({ ok: false, error: "expired_token" });
 
-  // payload токена: tg_id + истекает через 10 минут
-  const payload = { tg_id: String(platform_id), sb_user_id: String(sb_user_id || ""), exp: Date.now() + 10*60*1000 };
-  const payloadStr = JSON.stringify(payload);
-  const payloadB64 = b64url(payloadStr);
-
-  const sig = sign(payloadB64, process.env.JWT_SECRET);
-  const token = `${payloadB64}.${sig}`;
-
-  return res.status(200).json({ ok:true, token, ttl_sec:600 });
+  // --- успех ---
+  return res.status(200).json({ ok: true, tg_id: payload.tg_id });
 };
