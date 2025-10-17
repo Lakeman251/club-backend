@@ -1,15 +1,21 @@
 const crypto = require("crypto");
 
-const TOKENS = new Map();
+function b64url(buf) {
+  return Buffer.from(buf).toString("base64").replace(/=/g,"").replace(/\+/g,"-").replace(/\//g,"_");
+}
+function sign(data, secret) {
+  return b64url(crypto.createHmac("sha256", secret).update(data).digest());
+}
 
 module.exports = (req, res) => {
   const ORIGIN = process.env.CORS_ORIGIN || "*";
   res.setHeader("Access-Control-Allow-Origin", ORIGIN);
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Webhook-Secret");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-WebHook-Secret");
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "POST") return res.status(405).json({ ok:false, error:"method_not_allowed" });
 
+  // проверяем секрет от Salebot
   const got = req.headers["x-webhook-secret"];
   if (!got || got !== process.env.WEBHOOK_SECRET) {
     return res.status(401).json({ ok:false, error:"bad_secret" });
@@ -18,13 +24,13 @@ module.exports = (req, res) => {
   const { platform_id, sb_user_id } = req.body || {};
   if (!platform_id) return res.status(400).json({ ok:false, error:"no_platform_id" });
 
-  const token = crypto.randomBytes(24).toString("base64url");
-  const expires_at = Date.now() + 2 * 60 * 1000; // 2 минуты
+  // payload токена: tg_id + истекает через 10 минут
+  const payload = { tg_id: String(platform_id), sb_user_id: String(sb_user_id || ""), exp: Date.now() + 10*60*1000 };
+  const payloadStr = JSON.stringify(payload);
+  const payloadB64 = b64url(payloadStr);
 
-  TOKENS.set(token, { platform_id, sb_user_id, expires_at });
-  for (const [k, v] of TOKENS) if (v.expires_at < Date.now()) TOKENS.delete(k);
+  const sig = sign(payloadB64, process.env.JWT_SECRET);
+  const token = `${payloadB64}.${sig}`;
 
-  return res.status(200).json({ ok:true, token, ttl_sec:120 });
+  return res.status(200).json({ ok:true, token, ttl_sec:600 });
 };
-
-module.exports._TOKENS = TOKENS;
