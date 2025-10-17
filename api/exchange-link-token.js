@@ -1,5 +1,14 @@
-// обмен одноразового токена на сессию (возвращаем tg_id)
-const { _TOKENS } = require("./issue-link-token");
+const crypto = require("crypto");
+
+function b64urlDecode(str) {
+  str = str.replace(/-/g,"+").replace(/_/g,"/");
+  const pad = 4 - (str.length % 4 || 4);
+  return Buffer.from(str + "=".repeat(pad), "base64").toString();
+}
+function sign(data, secret) {
+  return crypto.createHmac("sha256", secret).update(data).digest("base64")
+    .replace(/=/g,"").replace(/\+/g,"-").replace(/\//g,"_");
+}
 
 module.exports = (req, res) => {
   const ORIGIN = process.env.CORS_ORIGIN || "*";
@@ -12,14 +21,18 @@ module.exports = (req, res) => {
   const { token } = req.body || {};
   if (!token) return res.status(400).json({ ok:false, error:"no_token" });
 
-  const rec = _TOKENS.get(token);
-  if (!rec) return res.status(401).json({ ok:false, error:"invalid_or_used_token" });
-  if (rec.expires_at < Date.now()) {
-    _TOKENS.delete(token);
-    return res.status(401).json({ ok:false, error:"expired_token" });
-  }
+  const [payloadB64, sig] = String(token).split(".");
+  if (!payloadB64 || !sig) return res.status(401).json({ ok:false, error:"invalid_token_format" });
 
-  _TOKENS.delete(token); // одноразовый
-  // для Telegram platform_id == tg_id
-  return res.status(200).json({ ok:true, tg_id: String(rec.platform_id) });
+  const expected = sign(payloadB64, process.env.JWT_SECRET);
+  if (expected !== sig) return res.status(401).json({ ok:false, error:"invalid_signature" });
+
+  let payload;
+  try { payload = JSON.parse(b64urlDecode(payloadB64)); }
+  catch { return res.status(401).json({ ok:false, error:"bad_payload" }); }
+
+  if (!payload.tg_id) return res.status(401).json({ ok:false, error:"no_tg_id" });
+  if (Date.now() > Number(payload.exp)) return res.status(401).json({ ok:false, error:"expired_token" });
+
+  return res.status(200).json({ ok:true, tg_id: payload.tg_id });
 };
