@@ -22,7 +22,8 @@ function sign(data, secret) {
 // ===== helper: генерируем сессионный токен =====
 function makeSession(tg_id) {
   const exp = Date.now() + 24 * 60 * 60 * 1000; // 24 часа
-  const payload = Buffer.from(JSON.stringify({ tg_id, exp })).toString("base64")
+  const payload = Buffer.from(JSON.stringify({ tg_id, exp }))
+    .toString("base64")
     .replace(/=/g, "")
     .replace(/\+/g, "-")
     .replace(/\//g, "_");
@@ -37,13 +38,18 @@ function makeSession(tg_id) {
 
 // ===== handler =====
 module.exports = (req, res) => {
-  const ORIGIN = process.env.CORS_ORIGIN || "*";
+  // CORS для установки cookie из другого origin
+  const ORIGIN = process.env.CORS_ORIGIN || "https://lakeman251.github.io";
   res.setHeader("Access-Control-Allow-Origin", ORIGIN);
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(204).end();
-  if (req.method !== "POST")
+
+  if (req.method !== "POST") {
     return res.status(405).json({ ok: false, error: "method_not_allowed" });
+  }
 
   // --- нормализуем вход ---
   let raw = (req.body?.token ?? "").toString().trim();
@@ -51,13 +57,15 @@ module.exports = (req, res) => {
   raw = decodeURIComponent(raw);
 
   const [payloadB64, sig] = raw.split(".");
-  if (!payloadB64 || !sig)
+  if (!payloadB64 || !sig) {
     return res.status(401).json({ ok: false, error: "invalid_token_format" });
+  }
 
   // --- проверяем подпись ---
   const expected = sign(payloadB64, process.env.JWT_SECRET || "");
-  if (expected !== sig)
+  if (expected !== sig) {
     return res.status(401).json({ ok: false, error: "invalid_signature" });
+  }
 
   // --- декодируем payload ---
   let payload;
@@ -67,11 +75,13 @@ module.exports = (req, res) => {
     return res.status(401).json({ ok: false, error: "bad_payload" });
   }
 
-  // --- логические проверки ---
-  if (!payload.tg_id)
+  // --- валидация ---
+  if (!payload.tg_id) {
     return res.status(401).json({ ok: false, error: "no_tg_id" });
-  if (Date.now() > Number(payload.exp))
+  }
+  if (Date.now() > Number(payload.exp)) {
     return res.status(401).json({ ok: false, error: "expired_token" });
+  }
 
   // --- создаём cookie-сессию ---
   const session = makeSession(payload.tg_id);
@@ -84,7 +94,7 @@ module.exports = (req, res) => {
   return res.status(200).json({
     ok: true,
     tg_id: payload.tg_id,
-    sb_user_id: payload.sb_user_id || null,
-    session
+    sb_user_id: payload.sb_user_id || null
+    // session в теле не возвращаем — он уже в HttpOnly cookie
   });
 };
