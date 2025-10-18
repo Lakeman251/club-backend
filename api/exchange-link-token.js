@@ -45,10 +45,15 @@ module.exports = (req, res) => {
   if (req.method !== "POST")
     return res.status(405).json({ ok: false, error: "method_not_allowed" });
 
-  // --- нормализуем вход ---
-  let raw = (req.body?.token ?? "").toString().trim();
-  raw = raw.replace(/^"+|"+$/g, ""); // убрать кавычки
-  raw = decodeURIComponent(raw);
+ // --- нормализуем вход ---
+let raw;
+if (typeof req.body === "string") {
+  raw = req.body.trim();                // пришло как text/plain
+} else {
+  raw = (req.body?.token ?? "").toString().trim(); // пришло как JSON
+}
+raw = raw.replace(/^"+|"+$/g, "");
+raw = decodeURIComponent(raw);
 
   const [payloadB64, sig] = raw.split(".");
   if (!payloadB64 || !sig)
