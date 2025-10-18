@@ -3,9 +3,7 @@ const crypto = require("crypto");
 
 // ===== utils =====
 function b64urlDecode(str) {
-  // нормализуем URL-safe → обычный
   str = String(str).replace(/-/g, "+").replace(/_/g, "/");
-  // убираем имеющийся паддинг и рассчитываем заново
   str = str.replace(/=+$/g, "");
   const padLen = (4 - (str.length % 4)) % 4;
   if (padLen) str += "=".repeat(padLen);
@@ -21,6 +19,22 @@ function sign(data, secret) {
     .replace(/\//g, "_");
 }
 
+// ===== helper: генерируем сессионный токен =====
+function makeSession(tg_id) {
+  const exp = Date.now() + 24 * 60 * 60 * 1000; // 24 часа
+  const payload = Buffer.from(JSON.stringify({ tg_id, exp })).toString("base64")
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+  const sig = crypto.createHmac("sha256", process.env.JWT_SECRET || "")
+    .update(payload)
+    .digest("base64")
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+  return `${payload}.${sig}`;
+}
+
 // ===== handler =====
 module.exports = (req, res) => {
   const ORIGIN = process.env.CORS_ORIGIN || "*";
@@ -33,8 +47,8 @@ module.exports = (req, res) => {
 
   // --- нормализуем вход ---
   let raw = (req.body?.token ?? "").toString().trim();
-  raw = raw.replace(/^"+|"+$/g, ""); // срезать кавычки
-  raw = decodeURIComponent(raw);     // на всякий
+  raw = raw.replace(/^"+|"+$/g, ""); // убрать кавычки
+  raw = decodeURIComponent(raw);
 
   const [payloadB64, sig] = raw.split(".");
   if (!payloadB64 || !sig)
@@ -56,14 +70,21 @@ module.exports = (req, res) => {
   // --- логические проверки ---
   if (!payload.tg_id)
     return res.status(401).json({ ok: false, error: "no_tg_id" });
-
   if (Date.now() > Number(payload.exp))
     return res.status(401).json({ ok: false, error: "expired_token" });
+
+  // --- создаём cookie-сессию ---
+  const session = makeSession(payload.tg_id);
+  res.setHeader(
+    "Set-Cookie",
+    `session=${session}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${24 * 60 * 60}`
+  );
 
   // --- успех ---
   return res.status(200).json({
     ok: true,
     tg_id: payload.tg_id,
-    sb_user_id: payload.sb_user_id || null
+    sb_user_id: payload.sb_user_id || null,
+    session
   });
 };
